@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CypherRelay Node Dashboard</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117; /* Dark Cypherpunk background */
+            color: #c9d1d9;
+        }
+        .console {
+            background-color: #161b22;
+            border: 1px solid #30363d;
+            height: 300px;
+            overflow-y: scroll;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8 flex justify-center items-start min-h-screen">
+
+    <!-- Main Container -->
+    <div class="w-full max-w-2xl bg-[#161b22] p-6 sm:p-8 rounded-xl shadow-2xl border border-[#30363d]">
+        <!-- Orange Accent Header -->
+        <h1 class="text-3xl font-bold mb-2 text-orange-500">CypherRelay Node Dashboard</h1>
+        <p class="text-gray-400 mb-6">
+            **Ephemeral Relay Mode:** Your Black Box is earning rewards by routing data without storing it.
+        </p>
+
+        <!-- Node Status & Reward Claiming Access -->
+        <div class="mb-6 p-4 rounded-lg bg-[#21262d] border border-[#30363d]">
+            <div class="flex justify-between items-center mb-2">
+                <p class="text-lg font-semibold text-orange-500">Node Status</p>
+                <span id="node-status" class="px-3 py-1 text-sm font-medium rounded-full bg-green-900 text-green-400">ONLINE</span>
+            </div>
+            <p>Node ID (Public Key): <code id="node-id" class="text-sm text-yellow-300 break-all">Initializing...</code></p>
+            
+            <!-- Claiming Interface -->
+            <div class="flex justify-between items-center mt-3 pt-3 border-t border-[#30363d]">
+                <p>Available Rewards: <span id="total-rewards" class="font-bold text-green-400">0.00 DAWN</span></p>
+                <button id="claim-button" class="py-1 px-3 text-sm bg-orange-600 hover:bg-orange-700 text-white font-semibold rounded-lg transition duration-200 disabled:bg-gray-600 disabled:text-gray-400" onclick="handleClaimRewards()" disabled>
+                    Claim DAWN
+                </button>
+            </div>
+        </div>
+
+        <!-- Simulation Area -->
+        <div class="mb-6">
+            <h2 class="text-xl font-semibold mb-3 text-gray-200">Simulate Secure Relay</h2>
+            <textarea id="message-input" class="w-full p-3 rounded-lg bg-[#0d1117] border border-[#30363d] text-gray-100 placeholder-gray-500 focus:ring-orange-500 focus:border-orange-500" rows="3" placeholder="Enter your secret message to be routed through the network..."></textarea>
+            <!-- Orange Accent Button -->
+            <button id="send-button" class="w-full mt-3 py-2 px-4 bg-orange-500 hover:bg-orange-600 text-white font-semibold rounded-lg shadow-md transition duration-200" onclick="handleSendMessage()">
+                Encrypt & Initiate Relay
+            </button>
+        </div>
+
+        <!-- Console Log -->
+        <div>
+            <h2 class="text-xl font-semibold mb-3 text-gray-200">Relay & Shred Log</h2>
+            <div id="console-log" class="console p-4 rounded-lg text-sm text-green-400">
+                Awaiting first relay event...
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase and Application Logic -->
+    <script type="module">
+        // Mandatory Firebase Imports and Initialization
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Variables from Canvas Environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth;
+        let userId;
+        let totalRewards = 0;
+
+        // --- Core Application Logic ---
+
+        const consoleLog = document.getElementById('console-log');
+        const nodeIdEl = document.getElementById('node-id');
+        const totalRewardsEl = document.getElementById('total-rewards');
+        const sendButton = document.getElementById('send-button');
+        const claimButtonEl = document.getElementById('claim-button'); // New reference
+
+        function log(message, type = 'info') {
+            const time = new Date().toLocaleTimeString();
+            let prefix = `[${time}] ${message}\n`;
+            let color = '#c9d1d9';
+
+            if (type === 'success') {
+                prefix = `[${time}] \u{1F512} ${message}\n`; // Lock icon
+                color = '#4CAF50';
+            } else if (type === 'error') {
+                prefix = `[${time}] \u{1F525} ${message}\n`; // Fire icon
+                color = '#f87171';
+            } else if (type === 'shred') {
+                prefix = `[${time}] \u{1F52A} ${message}\n`; // Knife/Axe icon
+                color = '#ff6347'; // Tomato red for destruction
+            }
+
+            const messageSpan = document.createElement('span');
+            messageSpan.style.color = color;
+            messageSpan.textContent = prefix;
+
+            consoleLog.prepend(messageSpan); // Prepend to show latest first
+        }
+
+        /**
+         * Updates the reward display and controls the Claim button's state.
+         */
+        function updateRewardDisplay() {
+            totalRewardsEl.textContent = `${totalRewards.toFixed(4)} DAWN`;
+            if (totalRewards > 0) {
+                claimButtonEl.disabled = false;
+            } else {
+                claimButtonEl.disabled = true;
+            }
+        }
+
+        /**
+         * Simulates claiming the accumulated rewards (resets local counter).
+         */
+        window.handleClaimRewards = function() {
+            if (totalRewards > 0) {
+                const claimedAmount = totalRewards;
+                totalRewards = 0; // Reset rewards
+                log(`\u{1F4B8} Rewards claimed! Sent ${claimedAmount.toFixed(4)} DAWN to wallet.`, 'success');
+                updateRewardDisplay();
+            } else {
+                log('No rewards available to claim.', 'info');
+            }
+        }
+
+
+        /**
+         * Simulates E2E encryption and returns a Base64 payload.
+         */
+        function encryptMessage(message) {
+            const encryptedPayload = btoa(message); // Simple Base64 mock encryption
+            return {
+                payload: encryptedPayload,
+                sizeKB: (encryptedPayload.length * 2) / 1024, // Estimate payload size
+                destination: '0x' + Array.from({length: 40}, () => Math.floor(Math.random() * 16).toString(16)).join('') // Mock destination wallet
+            };
+        }
+
+        /**
+         * Simulates the core function of the Black Box: relaying and then destroying the data.
+         */
+        async function simulateRelayAndShred(encryptedData) {
+            const { payload, sizeKB, destination } = encryptedData;
+            const latencyMs = Math.floor(Math.random() * 50) + 10; // Simulate 10-60ms relay time
+
+            log(`\n--- RELAY JOB STARTED ---`);
+            log(`Encrypted Payload (Size: ${sizeKB.toFixed(2)} KB) received for routing.`);
+            log(`Destination: ${destination.substring(0, 10)}...`);
+
+            // 1. Simulate Relay (Forwarding)
+            log(`Routing payload through internal mesh...`);
+            await new Promise(resolve => setTimeout(resolve, latencyMs)); // Simulate network time
+            log(`Payload successfully relayed in ${latencyMs} ms.`);
+
+            // 2. Proof-of-Relay (PoR) Calculation
+            const reward = sizeKB * 0.015 + (Math.random() * 0.005);
+            totalRewards += reward;
+            log(`\u{1F4B0} Proof-of-Relay (PoR) Confirmed! Rewarded ${reward.toFixed(4)} DAWN.`);
+            updateRewardDisplay(); // Update display and claim button state
+
+            // 3. Ephemeral Data Shredding (The Cypherpunk Core)
+            log(`Initiating GPU-Accelerated Ephemeral Shredding...`, 'shred');
+
+            await new Promise(resolve => setTimeout(resolve, 50)); // Simulate shredding time
+            log(`All data and metadata successfully shredded from cache and storage.`, 'shred');
+            log(`--- RELAY JOB COMPLETE ---`);
+        }
+
+        window.handleSendMessage = async function() {
+            const messageInput = document.getElementById('message-input');
+            const message = messageInput.value.trim();
+
+            if (!message) {
+                log('Error: Please enter a message to encrypt and relay.', 'error');
+                return;
+            }
+
+            sendButton.disabled = true;
+            sendButton.textContent = 'Relaying... Please Wait';
+            messageInput.value = ''; // Clear input immediately
+
+            const encryptedData = encryptMessage(message);
+            await simulateRelayAndShred(encryptedData);
+
+            sendButton.disabled = false;
+            sendButton.textContent = 'Encrypt & Initiate Relay';
+        }
+
+        async function initializeCypherRelayApp() {
+            setLogLevel('Debug');
+            let app;
+
+            try {
+                // Initialize Firebase
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                log('Firebase services initialized.');
+
+                // 1. Authenticate (required for user ID)
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                    log('Signed in with custom token.');
+                } else {
+                    await signInAnonymously(auth);
+                    log('Signed in anonymously.');
+                }
+
+                // 2. Get User ID (Node Identifier)
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        // Use the user's ID as the base for the Node's public key (for identity)
+                        nodeIdEl.textContent = `0x${userId.substring(0, 20)}...`;
+                        log(`CypherRelay Node ID established based on user authentication.`);
+                    } else {
+                        // Fallback if auth is somehow lost
+                        userId = crypto.randomUUID();
+                        nodeIdEl.textContent = `0x${userId.substring(0, 20)}... (Anon)`;
+                        log('Warning: No authenticated user. Using anonymous Node ID.', 'error');
+                    }
+                });
+                
+                // Initialize reward display
+                updateRewardDisplay();
+
+            } catch (error) {
+                console.error("Firebase Initialization Error:", error);
+                log(`Critical Initialization Error: ${error.message}`, 'error');
+                nodeIdEl.textContent = 'ERROR';
+                document.getElementById('node-status').textContent = 'OFFLINE';
+                document.getElementById('node-status').classList.replace('bg-green-900', 'bg-red-900');
+                document.getElementById('node-status').classList.replace('text-green-400', 'text-red-400');
+            }
+        }
+
+        window.onload = initializeCypherRelayApp;
+    </script>
+</body>
+</html>
